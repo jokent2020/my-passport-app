@@ -20,8 +20,14 @@ st.markdown("""
 
 # --- 初始化 Gemini AI ---
 if "GEMINI_API_KEY" in st.secrets:
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    try:
+        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+        # 使用最穩定的模型名稱
+        # 修正：確保模型名稱正確
+        model = genai.GenerativeModel('gemini-1.5-flash') 
+    except Exception as e:
+        st.error(f"AI 初始化失敗: {e}")
+        st.stop()
 else:
     st.error("請在 Secrets 中設定 GEMINI_API_KEY")
     st.stop()
