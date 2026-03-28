@@ -11,14 +11,23 @@ import io
 st.set_page_config(page_title="Google AI 護照掃描", layout="wide")
 st.title("🚀 Google AI 護照極速辨識系統")
 
-# 讀取 Google 鑰匙
+# --- 修改後的讀取金鑰區塊 ---
 if "GCP_SERVICE_ACCOUNT" in st.secrets:
-    info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"].strip())
+    # 1. 讀取並去除前後空格
+    raw_json = st.secrets["GCP_SERVICE_ACCOUNT"].strip()
+    info = json.loads(raw_json)
+    
+    # 2. 強力修復 private_key 中的換行問題
+    # 這是最關鍵的一步，防止複製貼上時 \n 變成真的換行
+    if "private_key" in info:
+        info["private_key"] = info["private_key"].replace("\\n", "\n")
+        
     credentials = service_account.Credentials.from_service_account_info(info)
     client = vision.ImageAnnotatorClient(credentials=credentials)
 else:
     st.error("請在 Streamlit Secrets 中設定 Google Cloud 憑證。")
     st.stop()
+# -------------------------
 
 # 初始化清單
 if 'data_list' not in st.session_state:
