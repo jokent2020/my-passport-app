@@ -18,18 +18,25 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 初始化 Gemini AI ---
+# --- 終極修正版初始化 ---
 if "GEMINI_API_KEY" in st.secrets:
-    try:
-        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        # 使用最穩定的模型名稱
-        # 修正：確保模型名稱正確
-        model = genai.GenerativeModel('gemini-1.5-flash') 
-    except Exception as e:
-        st.error(f"AI 初始化失敗: {e}")
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    
+    # 自動尋找帳號中可用的模型
+    available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+    
+    # 優先選擇 flash 模型，如果沒有則隨便選一個
+    selected_model = 'models/gemini-1.5-flash'
+    if selected_model not in available_models:
+        selected_model = available_models[0] if available_models else None
+    
+    if selected_model:
+        model = genai.GenerativeModel(selected_model)
+    else:
+        st.error("你的 Google AI 帳號目前沒有可用的模型。")
         st.stop()
 else:
-    st.error("請在 Secrets 中設定 GEMINI_API_KEY")
+    st.error("請設定 GEMINI_API_KEY")
     st.stop()
 
 # --- 初始化資料儲存 (Session State) ---
