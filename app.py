@@ -90,11 +90,34 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. 核心邏輯 (Gemini 1.5 Flash) ---
+# --- 2. 核心邏輯 (自動模型偵測修正版) ---
 if "GEMINI_API_KEY" in st.secrets:
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    # 自動選擇可用模型
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    try:
+        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+        
+        # 取得所有可用的模型列表
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # 優先順序：1.5-flash -> 1.5-pro -> 任何包含 flash 的模型 -> 第一個可用模型
+        selected_model_name = None
+        for target in ['models/gemini-1.5-flash', 'models/gemini-1.5-pro', 'models/gemini-pro-vision']:
+            if target in available_models:
+                selected_model_name = target
+                break
+        
+        if not selected_model_name:
+            # 如果上面都沒中，找名字裡有 flash 的
+            flash_models = [m for m in available_models if 'flash' in m]
+            selected_model_name = flash_models[0] if flash_models else available_models[0]
+
+        # 初始化模型
+        model = genai.GenerativeModel(selected_model_name)
+        # 在側邊欄顯示目前使用的模型 (偵錯用，成功後可刪除)
+        # st.sidebar.info(f"使用模型: {selected_model_name}")
+        
+    except Exception as e:
+        st.error(f"AI 初始化失敗，請檢查 API Key 是否有效。錯誤回報: {e}")
+        st.stop()
 else:
     st.error("❌ 尚未在 Secrets 中配置 GEMINI_API_KEY")
     st.stop()
