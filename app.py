@@ -13,7 +13,7 @@ st.title("🚀 Google AI 護照極速辨識系統")
 
 # 讀取 Google 鑰匙
 if "GCP_SERVICE_ACCOUNT" in st.secrets:
-    info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"])
+    info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT"].strip())
     credentials = service_account.Credentials.from_service_account_info(info)
     client = vision.ImageAnnotatorClient(credentials=credentials)
 else:
