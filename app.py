@@ -1,160 +1,132 @@
 import streamlit as st
 import pandas as pd
-from google.cloud import vision
-from google.oauth2 import service_account
+import google.generativeai as genai
+from PIL import Image
 import json
 import re
-from PIL import Image
-import io
+from datetime import datetime
 
-# 頁面配置
-st.set_page_config(page_title="專業證件批量辨識系統", layout="wide")
-st.title("🗂️ 證件批量辨識與自動歸檔系統")
-st.markdown("---")
+# --- 頁面設定 ---
+st.set_page_config(page_title="跨境資料整合助手", layout="wide", initial_sidebar_state="collapsed")
 
-# 1. 讀取 Google AI 鑰匙 (沿用先前的設定)
-if "GCP_SERVICE_ACCOUNT" in st.secrets:
-    try:
-        raw_json = st.secrets["GCP_SERVICE_ACCOUNT"].strip()
-        info = json.loads(raw_json)
-        if "private_key" in info:
-            info["private_key"] = info["private_key"].replace("\\n", "\n")
-        credentials = service_account.Credentials.from_service_account_info(info)
-        client = vision.ImageAnnotatorClient(credentials=credentials)
-    except Exception as e:
-        st.error(f"金鑰解析失敗: {e}")
-        st.stop()
+# 注入自定義 CSS 仿造 React 提供的深色 UI
+st.markdown("""
+<style>
+    .main { background-color: #020617; color: #f1f5f9; }
+    .stButton>button { width: 100%; border-radius: 12px; font-weight: bold; }
+    .stDataFrame { border: 1px solid #1e293b; border-radius: 15px; }
+</style>
+""", unsafe_allow_html=True)
+
+# --- 初始化 Gemini AI ---
+if "GEMINI_API_KEY" in st.secrets:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    model = genai.GenerativeModel('gemini-1.5-flash')
 else:
-    st.error("請先設定 Secrets!")
+    st.error("請在 Secrets 中設定 GEMINI_API_KEY")
     st.stop()
 
-# 2. 初始化 Session State 儲存資料
-if 'master_df' not in st.session_state:
-    st.session_state.master_df = pd.DataFrame(columns=[
-        "核對狀態", "證件類型", "繁體姓名", "英文姓名", "出生日期", "性別", 
-        "護照號碼", "護照效期", "台胞證號", "台胞證效期", "台灣身分證號", "文件狀態", "原始檔名"
-    ])
+# --- 初始化資料儲存 (Session State) ---
+if 'records' not in st.session_state:
+    st.session_state.records = {} # 使用字典，以姓名為 Key 方便合併
 
-# --- 強大的資料提取函數 ---
-def extract_document_info(full_text, filename):
-    text = full_text.upper()
-    data = {
-        "核對狀態": "待核對",
-        "證件類型": "未知",
-        "繁體姓名": "",
-        "英文姓名": "",
-        "出生日期": "",
-        "性別": "",
-        "護照號碼": "",
-        "護照效期": "",
-        "台胞證號": "",
-        "台胞證效期": "",
-        "台灣身分證號": "",
-        "文件狀態": "辨識成功",
-        "原始檔名": filename
-    }
+# --- 核心邏輯：更新或新增紀錄 ---
+def update_records(new_data):
+    # 根據姓名(繁)或英文姓名作為合併基準
+    name_key = new_data.get("nameTraditional") or new_data.get("nameEN")
+    if not name_key:
+        return
 
-    # 判斷證件類型
-    if "PASSPORT" in text or "P<" in text:
-        data["證件類型"] = "護照"
-    elif "台胞證" in text or "MAINLAND" in text or "TRAVEL PERMIT" in text:
-        data["證件類型"] = "台胞證"
+    if name_key in st.session_state.records:
+        # 如果人名已存在，則合併資料 (補洞)
+        old_data = st.session_state.records[name_key]
+        for key, value in new_data.items():
+            if value: # 只更新有抓到新資料的欄位
+                old_data[key] = value
     else:
-        data["證件類型"] = "需人工判斷"
+        # 新增紀錄
+        st.session_state.records[name_key] = new_data
 
-    # 提取身分證號 (1字母+9數字)
-    id_match = re.search(r'[A-Z][1-2][0-9]{8}', text)
-    if id_match: data["台灣身分證號"] = id_match.group(0)
+# --- 調用 AI 辨識 ---
+def process_with_gemini(image):
+    prompt = """
+    你是一個專業證件辨識專家。請分析這張圖片，並嚴格回傳 JSON 格式。
+    如果是護照，請填入 passport 欄位；如果是台胞證，請填入 permit 欄位。
+    JSON 格式如下：
+    {
+        "nameTraditional": "姓名(繁體)",
+        "nameEN": "英文姓名(大寫)",
+        "birthDate": "YYYY.MM.DD",
+        "gender": "男/女",
+        "passportNo": "護照號碼",
+        "passportExpiry": "YYYY.MM.DD",
+        "permitNo": "台胞證號",
+        "permitExpiry": "YYYY.MM.DD",
+        "taiwanID": "台灣身分證號"
+    }
+    """
+    response = model.generate_content([prompt, image])
+    try:
+        # 提取 JSON 字串
+        clean_json = re.search(r'\{.*\}', response.text, re.DOTALL).group()
+        return json.loads(clean_json)
+    except:
+        return None
 
-    # 提取護照號碼 (通常為 9 碼，大寫字母開頭)
-    p_match = re.search(r'[A-Z][0-9]{8}', text)
-    if p_match: data["護照號碼"] = p_match.group(0)
+# --- UI 佈局 ---
+st.title("🛡️ 跨境資料整合助手")
+st.caption("支援批量上傳護照、台胞證，自動偵測重複並合併資料")
 
-    # 提取台胞證號 (8位數字)
-    mtp_match = re.search(r'[^0-9]([0-9]{8})[^0-9]', text)
-    if mtp_match: data["台胞證號"] = mtp_match.group(1)
-
-    # 提取繁體中文姓名 (找 2-4 個中文字)
-    c_names = re.findall(r'[\u4e00-\u9fa5]{2,4}', full_text)
-    if c_names: 
-        # 過濾掉「中華民國」、「護照」等關鍵字
-        filtered_names = [n for n in c_names if n not in ["中華民國", "護照", "台灣", "台胞證"]]
-        if filtered_names: data["繁體姓名"] = filtered_names[0]
-
-    # 提取日期 (YYYY.MM.DD 或 YYYY/MM/DD)
-    dates = re.findall(r'(\d{4}[./]\d{2}[./]\d{2})', text)
-    if dates:
-        data["出生日期"] = dates[0]
-        if len(dates) > 1: data["護照效期"] = dates[-1]
-
-    return data
-
-# --- UI 介面 ---
-col_up, col_info = st.columns([1, 1])
-
-with col_up:
-    st.subheader("1. 批量上傳照片")
-    uploaded_files = st.file_uploader("可同時選取多張護照與台胞證圖片", type=['jpg', 'jpeg', 'png'], accept_multiple_files=True)
+# 檔案上傳
+uploaded_files = st.file_uploader("點擊或拖拽上傳證件照片...", type=['jpg', 'jpeg', 'png'], accept_multiple_files=True)
 
 if uploaded_files:
-    if st.button("🚀 開始批量分析", use_container_width=True):
-        new_rows = []
+    if st.button(f"🚀 開始處理 {len(uploaded_files)} 個檔案"):
         progress_bar = st.progress(0)
-        
-        for index, file in enumerate(uploaded_files):
-            # 讀取圖片
-            content = file.read()
-            image = vision.Image(content=content)
-            
-            # Google AI 辨識
-            response = client.text_detection(image=image)
-            if response.text_annotations:
-                full_text = response.text_annotations[0].description
-                # 提取與分類
-                row_info = extract_document_info(full_text, file.name)
-                new_rows.append(row_info)
-            
-            progress_bar.progress((index + 1) / len(uploaded_files))
-        
-        # 合併到主表格
-        new_df = pd.DataFrame(new_rows)
-        st.session_state.master_df = pd.concat([st.session_state.master_df, new_df], ignore_index=True)
-        st.success(f"成功處理 {len(new_rows)} 份文件！")
+        for i, file in enumerate(uploaded_files):
+            img = Image.open(file)
+            result = process_with_gemini(img)
+            if result:
+                update_records(result)
+            progress_bar.progress((i + 1) / len(uploaded_files))
+        st.success("處理完成！")
 
-# 3. 資料整理區
+# --- 資料清單 ---
 st.markdown("---")
-st.subheader("2. 資料核對與整理中心")
+st.subheader(f"👥 旅客名單 ({len(st.session_state.records)})")
 
-if not st.session_state.master_df.empty:
-    # 讓使用者可以點擊刪除或修改
-    edited_df = st.data_editor(
-        st.session_state.master_df, 
-        num_rows="dynamic", 
-        use_container_width=True,
-        column_config={
-            "核對狀態": st.column_config.SelectboxColumn("核對狀態", options=["待核對", "正確", "有誤"]),
-            "性別": st.column_config.SelectboxColumn("性別", options=["M", "F"]),
-        }
-    )
-    st.session_state.master_df = edited_df
+if st.session_state.records:
+    # 轉換成 DataFrame 顯示
+    df = pd.DataFrame(list(st.session_state.records.values()))
+    
+    # 欄位重新排序與美化標籤
+    column_mapping = {
+        "nameTraditional": "姓名(繁)",
+        "nameEN": "英文姓名",
+        "birthDate": "出生日期",
+        "gender": "性別",
+        "passportNo": "護照號碼",
+        "passportExpiry": "護照效期",
+        "permitNo": "台胞證號",
+        "permitExpiry": "台胞證效期",
+        "taiwanID": "台灣身分證"
+    }
+    df = df.rename(columns=column_mapping)
+    
+    # 可編輯表格
+    edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
 
-    # 4. 一鍵導出
-    st.markdown("---")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        if st.button("🧹 清空清單"):
-            st.session_state.master_df = st.session_state.master_df.iloc[0:0]
+    # 匯出與重置
+    col_dl, col_rs = st.columns([4, 1])
+    with col_dl:
+        csv = edited_df.to_csv(index=False).encode('utf-8-sig')
+        st.download_button("📥 下載 CSV 報表", data=csv, file_name=f"跨境資料_{datetime.now().strftime('%m%d')}.csv", mime='text/csv')
+    with col_rs:
+        if st.button("🗑️ 重置清單", type="secondary"):
+            st.session_state.records = {}
             st.rerun()
-    with c3:
-        file_name = "證件資料彙整表.xlsx"
-        edited_df.to_excel(file_name, index=False)
-        with open(file_name, "rb") as f:
-            st.download_button(
-                label="📥 下載整理好的 Excel 報表",
-                data=f,
-                file_name=file_name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
 else:
-    st.info("尚未上傳任何檔案。")
+    st.info("目前尚無紀錄，請上傳證件照片。")
+
+# 頁尾
+st.markdown("<br><p style='text-align: center; opacity: 0.3; font-size: 0.8rem;'>TOUR OPERATION INTELLIGENCE V3.0</p>", unsafe_allow_html=True)
